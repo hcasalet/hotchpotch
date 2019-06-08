@@ -10,14 +10,6 @@ data Const = CInt Integer
            | CBool Bool
            deriving (Show, Eq, Ord)
 
-data Expr     =  Var Var
-              |  Con Const
-              |  App Expr Expr
-              |  Lam String Expr
-              |  Let String Expr Expr
-              |  If Expr Expr Expr
-              deriving (Show, Eq, Ord)
-
 data Type    =  TVar Var
              |  TCon String
              |  TFun Type Type
@@ -29,6 +21,14 @@ newtype TypeEnv = TypeEnv (Map.Map Var Scheme)
 
 extend :: TypeEnv -> (Var, Scheme) -> TypeEnv
 extend (TypeEnv env) (x, s) = TypeEnv $ Map.insert x s env
+
+data Expr     =  Var Var
+              |  Con Const
+              |  App Expr Expr
+              |  Lam String Expr
+              |  Let String Expr Expr
+              |  If Expr Expr Expr
+              deriving (Show, Eq, Ord)
 
 class Types a where
     apply  ::  Subst -> a -> a
