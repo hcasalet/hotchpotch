@@ -5,7 +5,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 
 type Var = String
-type Subst = Map.Map String Type
+type Substitutable = Map.Map String Type
 
 data Const = CInt Integer
            | CBool Bool
@@ -33,7 +33,7 @@ data Expr     =  Var Var
               deriving (Show, Eq, Ord)
 
 class Types a where
-    applysubstitution  ::  Subst -> a -> a
+    applysubstitution  ::  Substitutable -> a -> a
     freetypevariable    ::  a -> Set.Set String
 
 instance Types Type where
@@ -60,11 +60,11 @@ instance Types TypeEnv where
     applysubstitution s (TypeEnv env)  =  TypeEnv $ Map.map (applysubstitution s) env
 
 -- Substitution
-emptySubst  ::  Subst
-emptySubst  =   Map.empty
+emptySubstitutable  ::  Substitutable
+emptySubstitutable  =   Map.empty
 
-mergeSubst         :: Subst -> Subst -> Subst
-mergeSubst s1 s2   = (Map.map (applysubstitution s1) s2) `Map.union` s1
+mergeSubstitutable  :: Substitutable -> Substitutable -> Substitutable
+mergeSubstitutable s1 s2   = (Map.map (applysubstitution s1) s2) `Map.union` s1
 
 -- Generalization
 generalize        ::  TypeEnv -> Type -> Scheme
@@ -85,7 +85,7 @@ instantiate (Forall vars t) = do  nvars <- mapM (\ _ -> newTypeVar "a") vars
 data TypeInferEnv = TypeInferEnv  {}
 
 data TypeInferState = TypeInferState {  inferenceSupply :: Int,
-                            inferenceSubst :: Subst}
+                            inferenceSubstitutable :: Substitutable}
 
 type TypeInfer a = ExceptT String (ReaderT TypeInferEnv (StateT TypeInferState IO)) a
 
@@ -95,36 +95,36 @@ runTypeInfer t =
          return (res, st)
     where initTIEnv = TypeInferEnv{}
           initTIState = TypeInferState{inferenceSupply = 0,
-                                inferenceSubst = Map.empty}
+                                inferenceSubstitutable = Map.empty}
 
-unify :: Type -> Type -> TypeInfer Subst
-unify (TCon a) (TCon b) | a == b      = return emptySubst
+unify :: Type -> Type -> TypeInfer Substitutable
+unify (TCon a) (TCon b) | a == b      = return emptySubstitutable
 unify (TVar u) t                      =  varBind u t
 unify t (TVar u)                      =  varBind u t
 unify (TFun l r) (TFun l' r')         =  do  s1 <- unify l l'
                                              s2 <- unify (applysubstitution s1 r) (applysubstitution s1 r')
-                                             return (s1 `mergeSubst` s2)
+                                             return (s1 `mergeSubstitutable` s2)
 unify t1 t2                           =  throwError $ "Type "  ++ show t1 ++
-                                       " vs. type " ++ show t2 ++ " do not unify."
+                                       " and type " ++ show t2 ++ " do not unify."
 
 occursCheck ::  Types a => String -> a -> Bool
 occursCheck a t = a `Set.member` freetypevariable t
 
-varBind :: String -> Type -> TypeInfer Subst
-varBind u t  | t == TVar u           =  return emptySubst
+varBind :: String -> Type -> TypeInfer Substitutable
+varBind u t  | t == TVar u           =  return emptySubstitutable
              | occursCheck u t       =  throwError $ "Type " ++ u ++ " does not occur in scheme " ++ show t ++ "."
              | otherwise             =  return (Map.singleton u t)
 
-infer        ::  TypeEnv -> Expr -> TypeInfer (Subst, Type)
+infer        ::  TypeEnv -> Expr -> TypeInfer (Substitutable, Type)
 infer (TypeEnv env) (Con l) =
     case l of
-        CInt n -> return (emptySubst, TCon "Int")
-        CBool n -> return (emptySubst, TCon "Bool")
+        CInt n -> return (emptySubstitutable, TCon "Int")
+        CBool n -> return (emptySubstitutable, TCon "Bool")
 infer (TypeEnv env) (Var n) =
     case Map.lookup n env of
         Nothing     ->  throwError $ "Variable " ++ n ++ " is unbound."
         Just sigma  ->  do t <- instantiate sigma
-                           return (emptySubst, t)
+                           return (emptySubstitutable, t)
 infer env (Lam n e) =
     do  tv <- newTypeVar "a"
         let env' = env `extend` (n, Forall [] tv)
@@ -135,19 +135,19 @@ infer env (App e1 e2) =
         (s1, t1) <- infer env e1
         (s2, t2) <- infer (applysubstitution s1 env) e2
         s3 <- unify (applysubstitution s2 t1) (TFun t2 tv)
-        return (s3 `mergeSubst` s2 `mergeSubst` s1, applysubstitution s3 tv)
+        return (s3 `mergeSubstitutable` s2 `mergeSubstitutable` s1, applysubstitution s3 tv)
 infer env (Let x e1 e2) =
     do  (s1, t1) <- infer env e1
         let    t' = generalize (applysubstitution s1 env) t1
         (s2, t2) <- infer ((applysubstitution s1 env) `extend` (x, t')) e2
-        return (s1 `mergeSubst` s2, t2)
+        return (s1 `mergeSubstitutable` s2, t2)
 infer env (If e1 e2 e3) =
     do  (s1, t1) <- infer env e1
         (s2, t2) <- infer env e2
         (s3, t3) <- infer env e3
         s4 <- unify t1 (TCon "Bool")
         s5 <- unify t2 t3
-        return (s5 `mergeSubst` s4 `mergeSubst` s3 `mergeSubst` s2 `mergeSubst` s1, applysubstitution s5 t2)
+        return (s5 `mergeSubstitutable` s4 `mergeSubstitutable` s3 `mergeSubstitutable` s2 `mergeSubstitutable` s1, applysubstitution s5 t2)
 
 typeInference :: Map.Map String Scheme -> Expr -> TypeInfer Type
 typeInference env e =
