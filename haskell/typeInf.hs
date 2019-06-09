@@ -11,6 +11,7 @@ data Const = CInt Integer
            | CBool Bool
            deriving (Show, Eq, Ord)
 
+-- Type variable
 data Type    =  TVar Var
              |  TCon String
              |  TFun Type Type
@@ -19,47 +20,39 @@ data Type    =  TVar Var
 
 data Scheme = Forall [Var] Type
 
+-- Type environment variable
 newtype TypeEnv = TypeEnv (Map.Map Var Scheme)
-
 extend :: TypeEnv -> (Var, Scheme) -> TypeEnv
 extend (TypeEnv env) (x, s) = TypeEnv $ Map.insert x s env
 
-data Expr     =  Var Var
-              |  Con Const
-              |  App Expr Expr
-              |  Lam String Expr
-              |  Let String Expr Expr
-              |  If Expr Expr Expr
-              deriving (Show, Eq, Ord)
-
-class Types a where
+-- Substitution
+class Subst a where
     applysubstitution  ::  Substitutable -> a -> a
     freetypevariable    ::  a -> Set.Set String
 
-instance Types Type where
+instance Subst Type where
     applysubstitution _ (TCon a)      = TCon a
     applysubstitution s (TVar n)      =  case Map.lookup n s of
-                               Nothing  -> TVar n
-                               Just t   -> t
+                                            Nothing  -> TVar n
+                                            Just t   -> t
     applysubstitution s (TFun t1 t2)  = TFun (applysubstitution s t1) (applysubstitution s t2)
-    freetypevariable (TVar n)      =  Set.singleton n
-    freetypevariable TCon{}        =  Set.empty
-    freetypevariable (TFun t1 t2)  =  freetypevariable t1 `Set.union` freetypevariable t2
+    freetypevariable (TVar n)         =  Set.singleton n
+    freetypevariable TCon{}           =  Set.empty
+    freetypevariable (TFun t1 t2)     =  freetypevariable t1 `Set.union` freetypevariable t2
 
-instance Types Scheme where
+instance Subst Scheme where
     freetypevariable (Forall vars t)         = freetypevariable t `Set.difference` (Set.fromList vars)
     applysubstitution s (Forall vars t)      = Forall vars $ applysubstitution s' t
                                  where s' = foldr Map.delete s vars
 
-instance Types a => Types [a] where
+instance Subst a => Subst [a] where
     freetypevariable l   =  foldr Set.union Set.empty (map freetypevariable l)
     applysubstitution s  =  map (applysubstitution s)
 
-instance Types TypeEnv where
+instance Subst TypeEnv where
     freetypevariable (TypeEnv env)     =  freetypevariable $ Map.elems env
     applysubstitution s (TypeEnv env)  =  TypeEnv $ Map.map (applysubstitution s) env
 
--- Substitution
 emptySubstitutable  ::  Substitutable
 emptySubstitutable  =   Map.empty
 
@@ -71,24 +64,50 @@ generalize        ::  TypeEnv -> Type -> Scheme
 generalize env t  =   Forall vars t
     where vars = Set.toList ((freetypevariable t) `Set.difference` (freetypevariable env))
 
+type TypeInfer a = ExceptT String (ReaderT TypeInferEnv (StateT TypeInferState IO)) a
 newTypeVar :: String -> TypeInfer Type
 newTypeVar prefix =
         do  s <- get
             put s{inferenceSupply = inferenceSupply s + 1}
             return (TVar  (prefix ++ show (inferenceSupply s)))
 
+-- Instantiation
 instantiate :: Scheme -> TypeInfer Type
 instantiate (Forall vars t) = do  nvars <- mapM (\ _ -> newTypeVar "a") vars
                                   let s = Map.fromList (zip vars nvars)
                                   return $ applysubstitution s t
 
+-- Unification
+unify :: Type -> Type -> TypeInfer Substitutable
+unify (TCon a) (TCon b) | a == b      = return emptySubstitutable
+unify (TVar u) t                      =  bind u t
+unify t (TVar u)                      =  bind u t
+unify (TFun l r) (TFun l' r')         =  do  s1 <- unify l l'
+                                             s2 <- unify (applysubstitution s1 r) (applysubstitution s1 r')
+                                             return (s1 `mergeSubstitutable` s2)
+unify t1 t2                           =  throwError $ "Type "  ++ show t1 ++
+                                       " and type " ++ show t2 ++ " do not unify."
+
+occursCheck ::  Subst a => String -> a -> Bool
+occursCheck a t = a `Set.member` freetypevariable t
+
+bind :: String -> Type -> TypeInfer Substitutable
+bind u t  | t == TVar u           =  return emptySubstitutable
+          | occursCheck u t       =  throwError $ "Type " ++ u ++ " does not occur in scheme " ++ show t ++ "."
+          | otherwise             =  return (Map.singleton u t)
+
+-- Expressions to do type inference on
+data Expr     =  Var Var
+              |  Con Const
+              |  App Expr Expr
+              |  Lam String Expr
+              |  Let String Expr Expr
+              |  If Expr Expr Expr
+              deriving (Show, Eq, Ord)
+
 data TypeInferEnv = TypeInferEnv  {}
-
-data TypeInferState = TypeInferState {  inferenceSupply :: Int,
-                            inferenceSubstitutable :: Substitutable}
-
-type TypeInfer a = ExceptT String (ReaderT TypeInferEnv (StateT TypeInferState IO)) a
-
+data TypeInferState = TypeInferState { inferenceSupply :: Int,
+         inferenceSubstitutable :: Substitutable}
 runTypeInfer :: TypeInfer a -> IO (Either String a, TypeInferState)
 runTypeInfer t =
       do (res, st) <- runStateT (runReaderT (runExceptT t) initTIEnv) initTIState
@@ -96,24 +115,6 @@ runTypeInfer t =
     where initTIEnv = TypeInferEnv{}
           initTIState = TypeInferState{inferenceSupply = 0,
                                 inferenceSubstitutable = Map.empty}
-
-unify :: Type -> Type -> TypeInfer Substitutable
-unify (TCon a) (TCon b) | a == b      = return emptySubstitutable
-unify (TVar u) t                      =  varBind u t
-unify t (TVar u)                      =  varBind u t
-unify (TFun l r) (TFun l' r')         =  do  s1 <- unify l l'
-                                             s2 <- unify (applysubstitution s1 r) (applysubstitution s1 r')
-                                             return (s1 `mergeSubstitutable` s2)
-unify t1 t2                           =  throwError $ "Type "  ++ show t1 ++
-                                       " and type " ++ show t2 ++ " do not unify."
-
-occursCheck ::  Types a => String -> a -> Bool
-occursCheck a t = a `Set.member` freetypevariable t
-
-varBind :: String -> Type -> TypeInfer Substitutable
-varBind u t  | t == TVar u           =  return emptySubstitutable
-             | occursCheck u t       =  throwError $ "Type " ++ u ++ " does not occur in scheme " ++ show t ++ "."
-             | otherwise             =  return (Map.singleton u t)
 
 infer        ::  TypeEnv -> Expr -> TypeInfer (Substitutable, Type)
 infer (TypeEnv env) (Con l) =
