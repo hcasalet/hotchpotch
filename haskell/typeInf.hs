@@ -100,15 +100,15 @@ unify t (TVar u)                      =  varBind u t
 unify (TFun l r) (TFun l' r')         =  do  s1 <- unify l l'
                                              s2 <- unify (apply s1 r) (apply s1 r')
                                              return (s1 `composeSubst` s2)
-unify t1 t2                           =  throwError $ "types do not unify: " ++ show t1 ++
-                                       " vs. " ++ show t2
+unify t1 t2                           =  throwError $ "Type "  ++ show t1 ++
+                                       " vs. type " ++ show t2 ++ " do not unify."
 
 occursCheck ::  Types a => String -> a -> Bool
 occursCheck a t = a `Set.member` ftv t
 
 varBind :: String -> Type -> TypeInfer Subst
 varBind u t  | t == TVar u           =  return nullSubst
-             | occursCheck u t       =  throwError $ "occurs check fails: " ++ u ++ " : " ++ show t
+             | occursCheck u t       =  throwError $ "Type " ++ u ++ " does not occur in scheme " ++ show t ++ "."
              | otherwise             =  return (Map.singleton u t)
 
 infer        ::  TypeEnv -> Expr -> TypeInfer (Subst, Type)
@@ -118,7 +118,7 @@ infer (TypeEnv env) (Con l) =
         CBool n -> return (nullSubst, TCon "Bool")
 infer (TypeEnv env) (Var n) =
     case Map.lookup n env of
-        Nothing     ->  throwError $ "unbound variable: " ++ n
+        Nothing     ->  throwError $ "Variable " ++ n ++ " is unbound."
         Just sigma  ->  do t <- instantiate sigma
                            return (nullSubst, t)
 infer env (Lam n e) =
@@ -153,30 +153,31 @@ typeInference env e =
 -- $$$$$$$$$$$$$$$$$$$
 -- Test Cases
 -- $$$$$$$$$$$$$$$$$$$
--- App (lambda x).15 25 => type: TCon "Int"
-e1  = App (Lam "x" (Con (CInt 15))) (Con (CInt 25))
+
+-- (Lambda x).25 => TFun (TVar "a0") (TCon "Int")
+e1  = Lam "x" (Con (CInt 25))
+
+-- (Lambda x).False => TFun (TVar "a0") (TCon "Bool")
+e2  = Lam "x" (Con (CBool False))
+
+-- App (lambda x).True 15 => type: TCon "Bool"
+e3  = App (Lam "x" (Con (CBool True))) (Con (CInt 15))
 
 -- App (lambda x).False 25 => type: TCon "Bool"
-e2  = App (Lam "x" (Con (CBool False))) (Con (CInt 25))
-
--- App (lambda x).15 False => type: TCon "Int"
-e3 = App (Lam "x" (Con (CInt 15))) (Con (CBool False))
+e4  = App (Lam "x" (Con (CInt 25))) (Var "y")
 
 -- let y = (lambda x).0 y => type: TFun (TVAR "a1") (TCon "Int")
-e4  =  Let "y" (Lam "x" (Con (CInt 0)))
-        (Var "y")
-
--- let y = (lambda x).False y => type: TFun (TVar "a1") (TCon "Bool")
-e5  =  Let "y" (Lam "x" (Con (CBool False)))
+e5  =  Let "y" (Lam "x" (Con (CInt 0)))
         (Var "y")
 
 -- (lambda m).(let x m (let y x(true)) y)  => TFun (TFun (TCon "Bool") (TVar "a1")) (TVar "a1")
 e6  =  Lam "m" (Let "x" (Var "m")
-                 (Let "y" (App (Var "x") (Con (CBool True)))
-                       (Var "y")))
+            (Let "y" (App (Var "x") (Con (CBool True)))
+                (Var "y")))
 
 -- If e1 then e2 else e3 => TCon "Int" (e2 (or e3))
-e7  = If (Con (CBool True)) (App (Lam "x" (Con (CInt 15))) (Con (CInt 25)))
+e7  = If (Con (CBool True))
+        (App (Lam "x" (Con (CInt 15))) (Con (CInt 25)))
         (Let "id" (Lam "x" (Var "x")) (App (App (Var "id") (Var "id")) (Con (CInt 109))))
 
 -- If e1 then e2 else e3 => type error as e1 is not TBool
@@ -190,7 +191,6 @@ e9  = If (Con (CBool True)) (App (Lam "x" (Con (CBool False))) (Con (CInt 25)))
 -- Let id (Lamda x).(App x x) id => type error
 e10  =  Let "id" (Lam "x" (App (Var "x") (Var "x")))
         (Var "id")
-
 
 test :: Expr -> IO ()
 test e =
